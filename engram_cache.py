@@ -55,6 +55,8 @@ class EngramEntry:
     # MARKER_187.10: Demotion tracking
     was_presented: bool = False
     presented_at: Optional[float] = None
+    # MARKER_MEM_PHASE6: Raw text snippet (uncompressed) for effective hydration
+    raw_snippet: Optional[str] = None
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -113,7 +115,8 @@ class EngramCache:
         return f"pair::{f1}::{f2}::{action}"
 
     def put(self, key: str, value: str, category: str = "default",
-            source_learning_id: Optional[str] = None, match_count: int = 0) -> bool:
+            source_learning_id: Optional[str] = None, match_count: int = 0,
+            raw_snippet: Optional[str] = None) -> bool:
         """Insert or update an entry. Returns True if new entry."""
         is_new = key not in self._cache
         if is_new and len(self._cache) >= MAX_ENTRIES:
@@ -123,6 +126,7 @@ class EngramCache:
             key=key, value=value, category=category,
             match_count=match_count,
             source_learning_id=source_learning_id,
+            raw_snippet=raw_snippet[:300] if raw_snippet else None,
         )
         self._save()
         return is_new
@@ -388,58 +392,6 @@ def ingest_feedback_memories(memory_dir: Optional[Path] = None) -> int:
     return ingested
 
 
-def ingest_role_memories(callsign: str, memory_dir: Optional[Path] = None) -> int:
-    """Ingest role memory entries into ENGRAM L1 cache (like feedback bridge).
-
-    Key format: role_memory::{callsign}::task::{task_id}
-    Category: pattern (TTL=60 days)
-    """
-    if not callsign:
-        return 0
-
-    cache = get_engram_cache()
-    if memory_dir is None:
-        memory_dir = _detect_claude_memory_dir()
-
-    if memory_dir is None:
-        return 0
-
-    role_dir = memory_dir / "roles" / callsign
-    memory_file = role_dir / "MEMORY.md"
-
-    if not memory_file.exists():
-        return 0
-
-    count = 0
-    try:
-        from src.memory.role_memory_writer import load_recent
-        entries = load_recent(callsign, last_n=10)  # more for indexing
-
-        for entry in entries:
-            task_id = entry.get("task_id", "unknown")
-            key = f"role_memory::{callsign}::task::{task_id}"
-
-            if cache.get(key):
-                continue  # already ingested
-
-            raw = entry.get("raw", "")
-            if len(raw) < 20:
-                continue  # skip empty/trivial
-
-            cache.put(
-                key=key,
-                value=raw[:500],  # cap at 500 chars
-                category="pattern",
-                source_learning_id=f"role_memory:{callsign}:{task_id}",
-                match_count=1,
-            )
-            count += 1
-    except Exception as e:
-        logger.warning("[ENGRAM] Role memory ingestion failed for %s: %s", callsign, e)
-
-    return count
-
-
 def _detect_claude_memory_dir() -> Optional[Path]:
     """Auto-detect Claude Code memory directory for this project.
 
@@ -507,6 +459,7 @@ def ingest_role_memories(callsign: str, memory_dir: Optional[Path] = None) -> in
                 category="pattern",
                 source_learning_id=f"role_memory:{callsign}:{task_id}",
                 match_count=1,
+                raw_snippet=raw,  # PHASE6: save uncompressed text before ELISION
             )
             count += 1
     except Exception as e:
@@ -516,11 +469,11 @@ def ingest_role_memories(callsign: str, memory_dir: Optional[Path] = None) -> in
 
 
 def hydrate_cam_from_engram(callsign: str = "") -> str:
-    """MARKER_MEM_PHASE5: Extract ENGRAM knowledge as context string for CAM surprise.
+    """MARKER_MEM_PHASE6: Extract ENGRAM knowledge as context string for CAM surprise.
 
-    Collects values from ENGRAM L1 cache entries (patterns, architecture, role_memory)
-    and returns a single text blob. When passed as `context` to CAM's calculate_surprise(),
-    it reduces surprise for content the agent already knows about.
+    Prefers raw_snippet (uncompressed) over value (ELISION-compressed).
+    Phase 5 bug: compressed text has near-zero word overlap with raw content,
+    making hydration ineffective. Phase 6 fix: cache raw text at write time.
 
     Returns:
         Concatenated ENGRAM knowledge text (capped at 2000 chars for performance).
@@ -536,8 +489,10 @@ def hydrate_cam_from_engram(callsign: str = "") -> str:
             # Also include non-agent-specific entries (architecture, danger, etc.)
             if entry.category not in ("architecture", "danger", "pattern"):
                 continue
-        if entry.value:
-            parts.append(entry.value[:200])  # cap per entry
+        # PHASE6: prefer raw_snippet (uncompressed) over value (compressed)
+        text = entry.raw_snippet or entry.value
+        if text:
+            parts.append(text[:200])  # cap per entry
 
     combined = " ".join(parts)
     return combined[:2000]  # total cap
