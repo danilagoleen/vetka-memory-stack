@@ -515,6 +515,34 @@ def ingest_role_memories(callsign: str, memory_dir: Optional[Path] = None) -> in
     return count
 
 
+def hydrate_cam_from_engram(callsign: str = "") -> str:
+    """MARKER_MEM_PHASE5: Extract ENGRAM knowledge as context string for CAM surprise.
+
+    Collects values from ENGRAM L1 cache entries (patterns, architecture, role_memory)
+    and returns a single text blob. When passed as `context` to CAM's calculate_surprise(),
+    it reduces surprise for content the agent already knows about.
+
+    Returns:
+        Concatenated ENGRAM knowledge text (capped at 2000 chars for performance).
+    """
+    cache = get_engram_cache()
+    if not cache._cache:
+        return ""
+
+    parts = []
+    for key, entry in cache._cache.items():
+        # Filter by callsign if provided
+        if callsign and callsign.lower() not in key.lower():
+            # Also include non-agent-specific entries (architecture, danger, etc.)
+            if entry.category not in ("architecture", "danger", "pattern"):
+                continue
+        if entry.value:
+            parts.append(entry.value[:200])  # cap per entry
+
+    combined = " ".join(parts)
+    return combined[:2000]  # total cap
+
+
 def _parse_feedback_frontmatter(filepath: Path) -> tuple:
     """Parse YAML frontmatter from a feedback_*.md file.
 
