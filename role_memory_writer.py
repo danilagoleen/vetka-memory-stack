@@ -178,7 +178,7 @@ def load_recent(callsign: str, last_n: int = 3) -> list[dict]:
             entries.append({
                 "task_id": task_id,
                 "title": title,
-                "raw": ("## [" + raw)[:800],  # cap at 800 chars for token budget
+                "raw": "## [" + raw,  # full content — budget managed by _apply_token_budget()
             })
 
         return entries[-last_n:]  # most recent N
